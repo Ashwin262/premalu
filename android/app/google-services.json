@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "735980448644",
+    "project_id": "premalu-1c712",
+    "storage_bucket": "premalu-1c712.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:735980448644:android:7b3f02f107558366bfcbd1",
+        "android_client_info": {
+          "package_name": "com.example.premalu"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA-uDZm9tBOmLOytY7hG1NMhybUkGeTMSI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
