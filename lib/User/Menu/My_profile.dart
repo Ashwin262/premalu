@@ -1,20 +1,31 @@
+import 'package:awesome_dialog/awesome_dialog.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:premalu/User/service/userservice.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:premalu/User/Home_callPage/HomePage.dart';
 
-class My_profile extends StatefulWidget {
+class MyProfile extends StatefulWidget {
+  const MyProfile({Key? key}) : super(key: key);
+
   @override
-  State<StatefulWidget> createState() {
-    return _My_profile();
-  }
+  MyProfileState createState() => MyProfileState();
 }
 
-class _My_profile extends State<My_profile> {
+class MyProfileState extends State<MyProfile> {
+  final _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _ageController = TextEditingController();
   final TextEditingController _stateController = TextEditingController();
   final TextEditingController _countryController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController(); // Added Email Controller
+  int _userNumberId = 0;
+  bool _isLoading = true;
 
-  final userservice _userService = userservice();
+  @override
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
 
   @override
   void dispose() {
@@ -22,38 +33,184 @@ class _My_profile extends State<My_profile> {
     _ageController.dispose();
     _stateController.dispose();
     _countryController.dispose();
+    _emailController.dispose(); // Dispose Email Controller
     super.dispose();
   }
 
-  Future<void> _updateProfile() async {
-    try {
-      String name = _nameController.text.trim();
-      int? age = int.tryParse(_ageController.text.trim());
-      String state = _stateController.text.trim();
-      String country = _countryController.text.trim();
 
-      if (name.isEmpty || age == null || state.isEmpty || country.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('All fields must be filled')),
-        );
+  Future<int?> _generateNumericUserId() async {
+    try {
+      final counterRef =
+      FirebaseFirestore.instance.collection('counters').doc('userCounter');
+
+      return await FirebaseFirestore.instance.runTransaction<int>((transaction) async {
+        final counterSnapshot = await transaction.get(counterRef);
+        int newCount;
+        if (!counterSnapshot.exists) {
+          newCount = 1000;
+          transaction.set(counterRef, {'count': newCount});
+        } else {
+          newCount = (counterSnapshot.data()?['count'] ?? 999) + 1;
+          transaction.update(counterRef, {'count': newCount});
+        }
+        return newCount;
+      });
+    } catch (e) {
+      _showErrorDialog('Failed to generate user ID: $e');
+      return null;
+    }
+  }
+
+  Future<void> _loadUserData() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      User? user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        _showErrorDialog('User not logged in');
         return;
       }
 
-      await _userService.saveUserProfile(name, age, state, country);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile updated successfully!')),
-      );
+      QuerySnapshot querySnapshot = await FirebaseFirestore.instance
+          .collection('userdata')
+          .where('firebaseUserId', isEqualTo: user.uid)
+          .get();
 
-      // Clear text field after successful update
-      _nameController.clear();
-      _ageController.clear();
-      _stateController.clear();
-      _countryController.clear();
+      if (querySnapshot.docs.isNotEmpty) {
+        // Retrieve the first document
+        DocumentSnapshot document = querySnapshot.docs.first;
+        var userData = document.data() as Map<String, dynamic>;
+
+        _userNumberId = userData['userId'] ?? 0;
+        _nameController.text = userData['name'] ?? '';
+        _ageController.text = (userData['age'] ?? '').toString();
+        _stateController.text = userData['state'] ?? '';
+        _countryController.text = userData['country'] ?? '';
+        _emailController.text = userData['email'] ?? ''; // Load Email
+
+      } else {
+        print("No user data found for this user.");
+        _userNumberId = 0;
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update profile: $e')),
-      );
+      _showErrorDialog('Failed to load user data: $e');
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
+  }
+
+  Future<void> _saveData() async {
+    if (_formKey.currentState!.validate()) {
+      try {
+        User? user = FirebaseAuth.instance.currentUser;
+        if (user == null) {
+          _showErrorDialog('User not logged in');
+          return;
+        }
+
+        final data = {
+          'name': _nameController.text,
+          'age': int.parse(_ageController.text),
+          'state': _stateController.text,
+          'country': _countryController.text,
+          'email': _emailController.text, //Save Email
+          'firebaseUserId': user.uid,
+        };
+
+        if (_userNumberId != 0) {
+          // User ID exists, update the existing document based on userId
+
+          QuerySnapshot existingUserSnapshot = await FirebaseFirestore.instance
+              .collection('userdata')
+              .where('userId', isEqualTo: _userNumberId)
+              .get();
+
+          if (existingUserSnapshot.docs.isNotEmpty) {
+            String docIdToUpdate = existingUserSnapshot.docs.first.id;
+            await FirebaseFirestore.instance
+                .collection('userdata')
+                .doc(docIdToUpdate)
+                .update(data);
+
+          } else {
+            //Should ideally never happen, but handle case where userId exists
+            //but document is not found
+            _showErrorDialog("Inconsistent State: User ID found but no document.  Please contact support.");
+            return;
+
+          }
+        } else {
+          // User ID doesn't exist, create a new document and generate a new userId
+          int? userId = await _generateNumericUserId();
+          if (userId == null) {
+            return;
+          }
+          data['userId'] = userId;
+          _userNumberId = userId; // update userId with newly generated id
+          await FirebaseFirestore.instance.collection('userdata').add(data);
+        }
+
+        _showSuccessDialog();
+        Future.delayed(Duration(seconds: 2), () {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => HomePage()),
+          );
+        });
+        _loadUserData(); // Reload data after saving
+      } catch (e) {
+        _showNetworkErrorDialog();
+        print('Error saving data: $e');
+      }
+    }
+  }
+
+  void _showSuccessDialog() {
+    AwesomeDialog(
+      context: context,
+      dialogType: DialogType.success,
+      animType: AnimType.topSlide,
+      showCloseIcon: true,
+      title: "Saved",
+      desc: "Profile Updated ",
+      btnCancelOnPress: () {},
+      btnOkOnPress: () {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => HomePage()),
+        );
+      },
+    ).show();
+  }
+
+  void _showNetworkErrorDialog() {
+    AwesomeDialog(
+      context: context,
+      dialogType: DialogType.error,
+      animType: AnimType.topSlide,
+      showCloseIcon: true,
+      title: "Network Error",
+      desc: "Profile not Updated. Please check your internet connection",
+      btnCancelOnPress: () {},
+      btnOkOnPress: () {},
+    ).show();
+  }
+
+  void _showErrorDialog(String message) {
+    AwesomeDialog(
+      context: context,
+      dialogType: DialogType.error,
+      animType: AnimType.topSlide,
+      showCloseIcon: true,
+      title: "Error",
+      desc: message,
+      btnCancelOnPress: () {},
+      btnOkOnPress: () {},
+    ).show();
   }
 
   @override
@@ -154,19 +311,27 @@ class _My_profile extends State<My_profile> {
                         Expanded(
                           child: Padding(
                             padding: const EdgeInsets.all(10),
-                            child: TextField(
-                              controller: _nameController,
-                              decoration: const InputDecoration(
-                                border: InputBorder.none,
-                                hintText: 'Name',
-                                hintStyle: TextStyle(
-                                  color: Color(0xFFF21B1B),
-                                  fontSize: 16,
-                                  fontFamily: 'Roboto',
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: 0.50,
-                                ),
-                              ),
+                            child: Form(
+                              key: _formKey,
+                              child: TextFormField(
+                                  controller: _nameController,
+                                  decoration: const InputDecoration(
+                                    border: InputBorder.none,
+                                    hintText: 'Name',
+                                    hintStyle: TextStyle(
+                                      color: Color(0xFFF21B1B),
+                                      fontSize: 16,
+                                      fontFamily: 'Roboto',
+                                      fontWeight: FontWeight.w400,
+                                      letterSpacing: 0.50,
+                                    ),
+                                  ),
+                                  validator: (value) {
+                                    if (value == null || value.isEmpty) {
+                                      return 'Please enter your name';
+                                    }
+                                    return null;
+                                  }),
                             ),
                           ),
                         ),
@@ -206,90 +371,29 @@ class _My_profile extends State<My_profile> {
                         Expanded(
                           child: Padding(
                             padding: const EdgeInsets.all(10),
-                            child: TextField(
-                              keyboardType: TextInputType.number,
-                              controller: _ageController,
-                              decoration: const InputDecoration(
-                                border: InputBorder.none,
-                                hintText: 'Age',
-                                hintStyle: TextStyle(
-                                  color: Color(0xFFF21B1B),
-                                  fontSize: 16,
-                                  fontFamily: 'Roboto',
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: 0.50,
+                            child: TextFormField(
+                                keyboardType: TextInputType.number,
+                                controller: _ageController,
+                                decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                  hintText: 'Age',
+                                  hintStyle: TextStyle(
+                                    color: Color(0xFFF21B1B),
+                                    fontSize: 16,
+                                    fontFamily: 'Roboto',
+                                    fontWeight: FontWeight.w400,
+                                    letterSpacing: 0.50,
+                                  ),
                                 ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: 45,
-              right: 0,
-              top: 339,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: const Text(
-                  'Select Your State',
-                  style: TextStyle(
-                    color: Color(0xFFB3261E),
-                    fontSize: 15,
-                    fontFamily: 'Inter',
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: 0,
-              right: 0,
-              top: 374,
-              child: Align(
-                alignment: Alignment.center,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                  child: Container(
-                    width: 330,
-                    height: 46,
-                    padding: const EdgeInsets.only(
-                      top: 1,
-                      left: 4,
-                      bottom: 5.54,
-                    ),
-                    decoration: ShapeDecoration(
-                      color: const Color(0xFFF6EE18),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.start,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.all(10),
-                            child: TextField(
-                              controller: _stateController,
-                              decoration: const InputDecoration(
-                                border: InputBorder.none,
-                                hintText: 'Tamil Nadu',
-                                hintStyle: TextStyle(
-                                  color: Color(0xFFF21B1B),
-                                  fontSize: 16,
-                                  fontFamily: 'Roboto',
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: 0.50,
-                                ),
-                              ),
-                            ),
+                                validator: (value) {
+                                  if (value == null || value.isEmpty) {
+                                    return 'Please enter your age';
+                                  }
+                                  if (int.tryParse(value) == null) {
+                                    return 'Please enter a valid number for age';
+                                  }
+                                  return null;
+                                }),
                           ),
                         ),
                       ],
@@ -301,7 +405,7 @@ class _My_profile extends State<My_profile> {
             Positioned(
               left: 0,
               right: 0,
-              top: 430,
+              top: 337,
               child: Align(
                 alignment: Alignment.center,
                 child: Padding(
@@ -328,20 +432,102 @@ class _My_profile extends State<My_profile> {
                         Expanded(
                           child: Padding(
                             padding: const EdgeInsets.all(10),
-                            child: TextField(
-                              controller: _countryController,
-                              decoration: const InputDecoration(
-                                border: InputBorder.none,
-                                hintText: 'India',
-                                hintStyle: TextStyle(
-                                  color: Color(0xFFF21B1B),
-                                  fontSize: 16,
-                                  fontFamily: 'Roboto',
-                                  fontWeight: FontWeight.w400,
-                                  letterSpacing: 0.50,
+                            child: TextFormField(
+                                controller: _emailController,
+                                decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                  hintText: 'Email',
+                                  hintStyle: TextStyle(
+                                    color: Color(0xFFF21B1B),
+                                    fontSize: 16,
+                                    fontFamily: 'Roboto',
+                                    fontWeight: FontWeight.w400,
+                                    letterSpacing: 0.50,
+                                  ),
                                 ),
-                              ),
-                            ),
+                                validator: (value) {
+                                  if (value == null || value.isEmpty) {
+                                    return 'Please enter your email';
+                                  }
+                                  if (!value.contains('@')) {
+                                    return 'Please enter a valid email address';
+                                  }
+                                  return null;
+                                }),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 45,
+              right: 0,
+              top: 393,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: const Text(
+                  'Select Your State',
+                  style: TextStyle(
+                    color: Color(0xFFB3261E),
+                    fontSize: 15,
+                    fontFamily: 'Inter',
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 428,
+              child: Align(
+                alignment: Alignment.center,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  child: Container(
+                    width: 330,
+                    height: 46,
+                    padding: const EdgeInsets.only(
+                      top: 1,
+                      left: 4,
+                      bottom: 5.54,
+                    ),
+                    decoration: ShapeDecoration(
+                      color: const Color(0xFFF6EE18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: TextFormField(
+                                controller: _stateController,
+                                decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                  hintText: 'State',
+                                  hintStyle: TextStyle(
+                                    color: Color(0xFFF21B1B),
+                                    fontSize: 16,
+                                    fontFamily: 'Roboto',
+                                    fontWeight: FontWeight.w400,
+                                    letterSpacing: 0.50,
+                                  ),
+                                ),
+                                validator: (value) {
+                                  if (value == null || value.isEmpty) {
+                                    return 'Please enter your state';
+                                  }
+                                  return null;
+                                }),
                           ),
                         ),
                       ],
@@ -353,7 +539,65 @@ class _My_profile extends State<My_profile> {
             Positioned(
               left: 0,
               right: 0,
-              top: 494,
+              top: 484,
+              child: Align(
+                alignment: Alignment.center,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                  child: Container(
+                    width: 330,
+                    height: 46,
+                    padding: const EdgeInsets.only(
+                      top: 1,
+                      left: 4,
+                      bottom: 5.80,
+                    ),
+                    decoration: ShapeDecoration(
+                      color: const Color(0xFFF6EE18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: TextFormField(
+                                controller: _countryController,
+                                decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                  hintText: 'Country',
+                                  hintStyle: TextStyle(
+                                    color: Color(0xFFF21B1B),
+                                    fontSize: 16,
+                                    fontFamily: 'Roboto',
+                                    fontWeight: FontWeight.w400,
+                                    letterSpacing: 0.50,
+                                  ),
+                                ),
+                                validator: (value) {
+                                  if (value == null || value.isEmpty) {
+                                    return 'Please enter your country';
+                                  }
+                                  return null;
+                                }),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 548,
               child: Align(
                 alignment: Alignment.center,
                 child: Container(
@@ -423,16 +667,17 @@ class _My_profile extends State<My_profile> {
             Positioned(
               left: 0,
               right: 0,
-              top: 546,
+              top: 600,
               child: Align(
                 alignment: Alignment.center,
                 child: ElevatedButton(
-                  onPressed: _updateProfile,
+                  onPressed: _saveData,
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.all(12),
                     backgroundColor: const Color(0xFFF21B1B),
                     shape: RoundedRectangleBorder(
-                      side: const BorderSide(width: 1, color: Color(0xFFF6EE18)),
+                      side: const BorderSide(
+                          width: 1, color: Color(0xFFF6EE18)),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     shadowColor: const Color(0x3F000000),
@@ -471,6 +716,10 @@ class _My_profile extends State<My_profile> {
                 ),
               ),
             ),
+            if (_isLoading)
+              const Center(
+                child: CircularProgressIndicator(),
+              ),
           ],
         ),
       ),

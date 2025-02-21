@@ -1,11 +1,64 @@
+// RecentCalls.dart
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Import Firestore package
+import 'package:firebase_auth/firebase_auth.dart';
 
 class RecentCalls extends StatefulWidget {
+  const RecentCalls({Key? key}) : super(key: key); // Added Key? key for constructor
+
   @override
   State<StatefulWidget> createState() => _RecentCallsState();
 }
 
 class _RecentCallsState extends State<RecentCalls> {
+  List<Map<String, dynamic>> _callHistory = []; // Store call history data
+  bool _isLoading = true; // Loading indicator flag
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCallHistory(); // Load call history when the widget initializes
+  }
+
+  // Fetch call history from Firestore
+  Future<void> _loadCallHistory() async {
+    setState(() {
+      _isLoading = true; // Set loading to true while fetching data
+    });
+
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid; // Get current user's ID
+      if (userId != null) {
+        _callHistory = await getCallHistory(userId); // Fetch call history
+      } else {
+        print("No user logged in"); // Handle case where no user is logged in
+      }
+    } catch (e) {
+      print("Error loading call history: $e"); // Log any errors
+      // Optionally, display an error message to the user
+    } finally {
+      setState(() {
+        _isLoading = false; // Set loading to false after data is fetched (or on error)
+      });
+    }
+  }
+
+  // Function to retrieve call history from Firestore
+  Future<List<Map<String, dynamic>>> getCallHistory(String userId) async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('callHistory') // Access the 'callHistory' collection
+          .where('callerId', isEqualTo: userId) // Filter by the current user's ID as the caller
+          .orderBy('startTime', descending: true) // Order by start time, newest first
+          .get(); // Get the data
+
+      return snapshot.docs.map((doc) => doc.data() as Map<String, dynamic>).toList(); // Convert to List<Map>
+    } catch (e) {
+      print('Error fetching call history: $e');
+      return []; // Return an empty list in case of an error
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -16,7 +69,7 @@ class _RecentCallsState extends State<RecentCalls> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {
-            // Handle back button press, e.g., Navigator.pop(context);
+            Navigator.pop(context); // Handle back button press
           },
         ),
       ),
@@ -31,17 +84,22 @@ class _RecentCallsState extends State<RecentCalls> {
           ),
         ),
         padding: const EdgeInsets.only(top: 16.0), // Add padding to the top
-        child: ListView.builder(
-          itemCount: 5, // Replace with the actual number of calls
+        child: _isLoading // Show loading indicator if data is loading
+            ? const Center(child: CircularProgressIndicator())
+            : _callHistory.isEmpty // Show message if there's no call history
+            ? const Center(child: Text('No recent calls.'))
+            : ListView.builder( // Build the list of call history items
+          itemCount: _callHistory.length,
           itemBuilder: (context, index) {
-            return buildCallItem(index);
+            return buildCallItem(_callHistory[index]); // Pass call data to buildCallItem
           },
         ),
       ),
     );
   }
 
-  Widget buildCallItem(int index) {
+  // Widget to build a single call history item
+  Widget buildCallItem(Map<String, dynamic> call) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Container(
@@ -66,7 +124,7 @@ class _RecentCallsState extends State<RecentCalls> {
                 height: 87,
                 decoration: ShapeDecoration(
                   image: const DecorationImage(
-                    image: NetworkImage("https://via.placeholder.com/93x87"),
+                    image: NetworkImage("https://via.placeholder.com/93x87"), // Placeholder image
                     fit: BoxFit.fill,
                   ),
                   shape: RoundedRectangleBorder(
@@ -87,13 +145,13 @@ class _RecentCallsState extends State<RecentCalls> {
                 ),
               ),
             ),
-            Expanded(  // Use Expanded for the text section
+            Expanded( // Use Expanded for the text section
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Executive Name $index', // Dynamically set name
+                    call['calleeId'] ?? 'Unknown', // Display callee's ID or 'Unknown'
                     style: const TextStyle(
                       color: Colors.black,
                       fontSize: 16,
@@ -102,7 +160,7 @@ class _RecentCallsState extends State<RecentCalls> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'DD/MM/YYYY\nHH:MM:SS', // Replace with actual date and time
+                    call['startTime']?.toDate().toString() ?? 'Unknown', // Display formatted start time or 'Unknown'
                     style: const TextStyle(
                       color: Colors.black,
                       fontSize: 15,
