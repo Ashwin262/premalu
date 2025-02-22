@@ -1,377 +1,262 @@
-/**
- * Cloud Functions for handling ZegoCloud Call Invitation callbacks.
- */
+// Unique Marker: This MUST reach Firebase - DEPLOYMENT TEST 2025-02-23
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+const crypto = require("crypto");
 
-const {onRequest} = require("firebase-functions/v2/https");
-const logger = require("firebase-functions/logger");
-const {initializeApp} = require("firebase-admin/app");
-const {getFirestore} = require("firebase-admin/firestore");
+console.log("🚀 New Deployment: Code Updated! TESTING 123");
 
-// Initialize Firebase Admin SDK
-initializeApp();
-const db = getFirestore();
+admin.initializeApp();
+const db = admin.firestore();
 
-/**
- * Configuration:
- *
- * 1.  Deploy this function to your Firebase project.
- * 2.  In your ZegoCloud project settings, configure the appropriate callback URLs to point to these functions.
- *
- *     Example URL (replace with your actual Firebase project and function name):
- *     https://us-central1-your-firebase-project-id.cloudfunctions.net/onSendCallInvitation
- *
- *     Important:  Ensure you're using HTTPS and that your ZegoCloud account is configured to send callbacks to HTTPS endpoints.
- *
- * 3.  Add the Firebase Admin SDK to your project: npm install firebase-admin
- *
- * Security Considerations:
- *
- * - **Authentication:** ZegoCloud callbacks should include some form of authentication (e.g., a shared secret key or JWT) to prevent unauthorized calls to your functions.  Implement this validation at the beginning of each function.  This example *does not* include authentication; you *must* add it!
- * - **Rate Limiting:** Implement rate limiting on your functions to prevent abuse.
- * - **Input Validation:** Thoroughly validate all data received in the request body to prevent injection attacks and other vulnerabilities.
- */
+const CALLBACK_SECRET = "bc49613e29dc350e493c51a541774eb5";
 
-/**
- * Handles the `sendCallInvitation` callback from ZegoCloud.
- *
- * This function is triggered when a call invitation is sent.
- *
- *  Expected Payload Structure (Check ZegoCloud documentation for the precise format):
- *  {
- *      callID: string,            // Unique identifier for the call
- *      inviterID: string,         // User ID of the person sending the invitation
- *      inviteeList: [{userID: string}], // Array of user IDs being invited
- *      data: string               // Optional additional data associated with the invitation
- *      ...other properties         // Check ZegoCloud Documentation
- *  }
- */
-exports.onSendCallInvitation = onRequest(async (request, response) => {
-    try {
-        logger.info("Send Call Invitation Callback Received", request.body);
+// --- Utility Functions ---
 
-        // *** IMPORTANT:  Add authentication/authorization here!  Verify the request is coming from ZegoCloud. ***
-        // Example (replace with your actual secret):
-        const authHeader = request.headers.authorization;
-        if (!authHeader || authHeader !== `bc49613e29dc350e493c51a541774eb5`) {
-            logger.error("Unauthorized access: Invalid authorization header");
-            response.status(401).send("Unauthorized");
-            return;
-        }
+function verifySignature(signature, timestamp, nonce) {
+  const tmpArr = [CALLBACK_SECRET, timestamp, nonce];
+  tmpArr.sort();
+  const tmpStr = tmpArr.join("");
+  const hash = crypto.createHash("sha1").update(tmpStr).digest("hex");
 
-        // Validate the request body (add more validation as needed)
-        if (!request.body || !request.body.callID || !request.body.inviterID) {
-            logger.error("Invalid request body: Missing required fields");
-            response.status(400).send("Bad Request: Missing required fields");
-            return;
-        }
-
-        const callID = request.body.callID;
-        const inviterID = request.body.inviterID;
-        const inviteeList = request.body.inviteeList;
-        const data = request.body.data;
-
-        // Store call invitation details in Firestore (or your preferred database)
-        const callInvitationRef = db.collection("callInvitations").doc(callID);
-        await callInvitationRef.set({
-            callID: callID,
-            inviterID: inviterID,
-            inviteeList: inviteeList,
-            data: data,
-            status: "pending", // Initial status
-            timestamp: new Date(),
-        });
-
-        logger.info(`Call invitation saved to Firestore with ID: ${callID}`);
-        response.status(200).send("OK");
-
-    } catch (error) {
-        logger.error("Error processing sendCallInvitation callback:", error);
-        response.status(500).send(`Internal Server Error: ${error}`);
-    }
-});
-
-
-/**
- * Handles the `cancelCallInvitation` callback from ZegoCloud.
- *
- * Triggered when a call invitation is canceled.
- *
- * Expected Payload Structure (Check ZegoCloud documentation):
- * {
- *      callID: string,
- *      inviterID: string,
- *      ... other properties
- * }
- */
-exports.onCancelCallInvitation = onRequest(async (request, response) => {
-    try {
-        logger.info("Cancel Call Invitation Callback Received", request.body);
-
-        // *** IMPORTANT:  Add authentication/authorization here!  ***
-        // Example (replace with your actual secret):
-          const authHeader = request.headers.authorization;
-        if (!authHeader || authHeader !== `Bearer YOUR_ZEGOCLOUD_SECRET_KEY`) {
-            logger.error("Unauthorized access: Invalid authorization header");
-            response.status(401).send("Unauthorized");
-            return;
-        }
-
-        if (!request.body || !request.body.callID) {
-            logger.error("Invalid request body: Missing callID");
-            response.status(400).send("Bad Request: Missing callID");
-            return;
-        }
-
-        const callID = request.body.callID;
-
-        // Update the call invitation status in Firestore
-        const callInvitationRef = db.collection("callInvitations").doc(callID);
-
-        // Check if the document exists first
-        const docSnapshot = await callInvitationRef.get();
-        if (!docSnapshot.exists) {
-            logger.warn(`Call invitation not found in Firestore: ${callID}`);
-            response.status(404).send("Not Found: Call invitation not found"); // Or a 200 OK if you don't want to expose this information
-            return;
-        }
-
-        await callInvitationRef.update({
-            status: "cancelled",
-            cancelledTimestamp: new Date(),
-        });
-
-        logger.info(`Call invitation status updated to cancelled for ID: ${callID}`);
-        response.status(200).send("OK");
-
-    } catch (error) {
-        logger.error("Error processing cancelCallInvitation callback:", error);
-        response.status(500).send(`Internal Server Error: ${error}`);
-    }
-});
-
-
-/**
- * Handles the `acceptCallInvitation` callback from ZegoCloud.
- *
- * Triggered when a call invitation is accepted.
- *
- * Expected Payload Structure (Check ZegoCloud documentation):
- * {
- *      callID: string,
- *      inviteeID: string, // User ID of the person accepting the invitation
- *      ... other properties
- * }
- */
-exports.onAcceptCallInvitation = onRequest(async (request, response) => {
-    try {
-        logger.info("Accept Call Invitation Callback Received", request.body);
-
-        // *** IMPORTANT:  Add authentication/authorization here!  ***
-        const authHeader = request.headers.authorization;
-        if (!authHeader || authHeader !== `Bearer YOUR_ZEGOCLOUD_SECRET_KEY`) {
-            logger.error("Unauthorized access: Invalid authorization header");
-            response.status(401).send("Unauthorized");
-            return;
-        }
-        if (!request.body || !request.body.callID || !request.body.inviteeID) {
-            logger.error("Invalid request body: Missing callID or inviteeID");
-            response.status(400).send("Bad Request: Missing callID or inviteeID");
-            return;
-        }
-
-        const callID = request.body.callID;
-        const inviteeID = request.body.inviteeID;
-
-        // Update the call invitation status in Firestore
-        const callInvitationRef = db.collection("callInvitations").doc(callID);
-
-         // Check if the document exists first
-        const docSnapshot = await callInvitationRef.get();
-        if (!docSnapshot.exists) {
-            logger.warn(`Call invitation not found in Firestore: ${callID}`);
-            response.status(404).send("Not Found: Call invitation not found"); // Or a 200 OK if you don't want to expose this information
-            return;
-        }
-
-
-        await callInvitationRef.update({
-            status: "accepted",
-            acceptTimestamp: new Date(),
-            acceptingUser: inviteeID, // Track who accepted
-        });
-
-        logger.info(`Call invitation status updated to accepted for ID: ${callID}`);
-        response.status(200).send("OK");
-
-    } catch (error) {
-        logger.error("Error processing acceptCallInvitation callback:", error);
-        response.status(500).send(`Internal Server Error: ${error}`);
-    }
-});
-
-
-/**
- * Handles the `rejectCallInvitation` callback from ZegoCloud.
- *
- * Triggered when a call invitation is rejected.
- *
- * Expected Payload Structure (Check ZegoCloud documentation):
- * {
- *      callID: string,
- *      inviteeID: string, // User ID of the person rejecting the invitation
- *      ... other properties
- * }
- */
-exports.onRejectCallInvitation = onRequest(async (request, response) => {
-    try {
-        logger.info("Reject Call Invitation Callback Received", request.body);
-
-        // *** IMPORTANT:  Add authentication/authorization here!  ***
-         const authHeader = request.headers.authorization;
-        if (!authHeader || authHeader !== `Bearer YOUR_ZEGOCLOUD_SECRET_KEY`) {
-            logger.error("Unauthorized access: Invalid authorization header");
-            response.status(401).send("Unauthorized");
-            return;
-        }
-
-        if (!request.body || !request.body.callID || !request.body.inviteeID) {
-            logger.error("Invalid request body: Missing callID or inviteeID");
-            response.status(400).send("Bad Request: Missing callID or inviteeID");
-            return;
-        }
-
-        const callID = request.body.callID;
-        const inviteeID = request.body.inviteeID;
-
-        // Update the call invitation status in Firestore
-        const callInvitationRef = db.collection("callInvitations").doc(callID);
-
-         // Check if the document exists first
-        const docSnapshot = await callInvitationRef.get();
-        if (!docSnapshot.exists) {
-            logger.warn(`Call invitation not found in Firestore: ${callID}`);
-            response.status(404).send("Not Found: Call invitation not found"); // Or a 200 OK if you don't want to expose this information
-            return;
-        }
-
-        await callInvitationRef.update({
-            status: "rejected",
-            rejectTimestamp: new Date(),
-            rejectingUser: inviteeID, // Track who rejected
-        });
-
-        logger.info(`Call invitation status updated to rejected for ID: ${callID}`);
-        response.status(200).send("OK");
-
-    } catch (error) {
-        logger.error("Error processing rejectCallInvitation callback:", error);
-        response.status(500).send(`Internal Server Error: ${error}`);
-    }
-});
-
-/**
- * Handles the `callInvitationTimedOut` callback from ZegoCloud.
- *
- * Triggered when a call invitation times out.
- *
- * Expected Payload Structure (Check ZegoCloud documentation):
- * {
- *      callID: string,
- *      ... other properties
- * }
- */
-exports.onCallInvitationTimedOut = onRequest(async (request, response) => {
-    try {
-        logger.info("Call Invitation Timed Out Callback Received", request.body);
-
-        // *** IMPORTANT:  Add authentication/authorization here!  ***
-         const authHeader = request.headers.authorization;
-        if (!authHeader || authHeader !== `Bearer YOUR_ZEGOCLOUD_SECRET_KEY`) {
-            logger.error("Unauthorized access: Invalid authorization header");
-            response.status(401).send("Unauthorized");
-            return;
-        }
-
-        if (!request.body || !request.body.callID) {
-            logger.error("Invalid request body: Missing callID");
-            response.status(400).send("Bad Request: Missing callID");
-            return;
-        }
-
-        const callID = request.body.callID;
-
-        // Update the call invitation status in Firestore
-        const callInvitationRef = db.collection("callInvitations").doc(callID);
-
-         // Check if the document exists first
-        const docSnapshot = await callInvitationRef.get();
-        if (!docSnapshot.exists) {
-            logger.warn(`Call invitation not found in Firestore: ${callID}`);
-            response.status(404).send("Not Found: Call invitation not found"); // Or a 200 OK if you don't want to expose this information
-            return;
-        }
-
-        await callInvitationRef.update({
-            status: "timed_out",
-            timeoutTimestamp: new Date(),
-        });
-
-        logger.info(`Call invitation status updated to timed_out for ID: ${callID}`);
-        response.status(200).send("OK");
-
-    } catch (error) {
-        logger.error("Error processing callInvitationTimedOut callback:", error);
-        response.status(500).send(`Internal Server Error: ${error}`);
-    }
-});
-
-
-/**
- *  Helper function (not a Firebase Function) to trigger the Firebase Functions locally,
- *  during development and testing.
- *
- *  Example Usage (using curl in a separate terminal):
- *  curl -X POST -H "Content-Type: application/json" -d '{"callID": "12345", "inviterID": "userA", "inviteeList": [{"userID": "userB"}]}' http://localhost:5001/your-firebase-project-id/us-central1/onSendCallInvitation
- *
- *  Replace `your-firebase-project-id` with your Firebase project ID.
- */
-async function testFunctionsLocally() {
-    const functions = require("firebase-functions");
-    const admin = require("firebase-admin");
-    const test = require("firebase-functions-test")({
-        projectId: "your-firebase-project-id",  // Replace with your Firebase project ID
-    }, "./serviceAccountKey.json");   // Replace with your Service Account Key file path
-
-
-    const sendCallInvitation = test.wrap(exports.onSendCallInvitation);
-
-    // Example payload
-    const req = {
-        body: {
-            callID: "12345",
-            inviterID: "userA",
-            inviteeList: [{ userID: "userB" }],
-            data: "some additional data",
-        },
-        headers: {
-            authorization: `Bearer YOUR_ZEGOCLOUD_SECRET_KEY`
-        }
-    };
-
-    const res = {
-        status: (code) => {
-            console.log("Status code:", code);
-            return res;  // Allow chaining
-        },
-        send: (message) => {
-            console.log("Response message:", message);
-        }
-    };
-
-    await sendCallInvitation(req, res);
-
-    test.cleanup();
+  return hash === signature;
 }
 
-// Uncomment this line to run the test function locally.  Make sure emulators are running!
-// testFunctionsLocally();
+async function logEvent(callId, eventName, eventData) {
+  try {
+      await db
+          .collection("call_logs")
+          .doc(callId)
+          .collection("events")
+          .doc(eventName)
+          .set(eventData, { merge: true });
+      console.log(`Event ${eventName} logged successfully for call ID: ${callId}`);
+  } catch (error) {
+      console.error(`Error logging event ${eventName} for call ID ${callId}:`, error);
+  }
+}
+
+async function handleZegoCloudCallback(req, res, eventName, next) {
+  try {
+    const { signature, timestamp, nonce, event } = req.body;
+
+    if (!verifySignature(signature, timestamp, nonce)) {
+      console.error("Invalid callback signature");
+      return res.status(401).send({ error: "Unauthorized" });
+    }
+
+    if (event === eventName) {
+      console.log(`Processing event: ${eventName} with data:`, req.body); // Log the data
+      await next(req.body);
+      return res.status(200).send({ message: `${eventName} event processed successfully` });
+    } else {
+      console.warn(`Invalid event: ${event} for this endpoint. Expected: ${eventName}`);
+      return res.status(400).send({ error: "Invalid event for this endpoint" });
+    }
+  } catch (error) {
+    console.error(`Error processing ${eventName} event:`, error);
+    return res.status(500).send({ error: "Internal server error" });
+  }
+}
+
+// ----  Functions  ----
+
+exports.handlecall_create = functions.https.onRequest(async (req, res) => {
+  console.log("🚀🚀🚀 Function handlecall_create is running! TEST 2024-02-23 🚀🚀🚀");
+  return handleZegoCloudCallback(req, res, "call_create", async (reqBody) => {
+    console.log("🚀🚀🚀 ZegoCloud callback in handlecall_create 🚀🚀🚀"); // added logging
+
+    const { call_id, user_ids, create_time, caller } = reqBody;
+
+    const eventData = {
+      status: "Created",
+      timestamp: parseInt(reqBody.timestamp, 10),
+      user_ids,
+      call_id,
+      create_time: parseInt(create_time, 10),
+      caller,
+      created_at: admin.firestore.Timestamp.now(),
+    };
+
+    await logEvent(call_id, "call_create", eventData);
+    console.log("Call creation log saved.");
+
+    // Create callHistory document
+    try {
+      const callHistoryRef = db.collection("callHistory").doc(call_id);
+      await callHistoryRef.set({
+        callId: call_id,
+        callerId: caller, // Assuming 'caller' is the ID of the caller
+        calleeIds: user_ids, // Use user_ids directly.
+        startTime: null, // Start time will be set on acceptance
+        endTime: null,
+        status: "Created", // Initial status.
+        createTime: admin.firestore.Timestamp.fromDate(
+          new Date(parseInt(create_time))
+        ), // Convert create_time to Firestore Timestamp
+      });
+
+      console.log("callHistory created for call_create:", call_id);
+    } catch (error) {
+      console.error("Error creating callHistory (call_create):", error);
+    }
+  });
+});
+
+exports.handlecall_cancel = functions.https.onRequest(async (req, res) => {
+    console.log("🚀🚀🚀 Function handlecall_cancel is running! TEST 2024-02-23 🚀🚀🚀");
+    return handleZegoCloudCallback(req, res, "call_cancel", async (reqBody) => {
+        console.log("🚀🚀🚀 ZegoCloud callback in handlecall_cancel 🚀🚀🚀"); // added logging
+        const { call_id, user_ids, reason } = reqBody;
+
+        const status = reason === "timeout_cancel" ? "Timed Out" : "Canceled";
+        const eventData = {
+            event_name: "call_cancel",
+            status,
+            timestamp: parseInt(reqBody.timestamp, 10),
+            reason,
+            user_ids,
+            created_at: admin.firestore.Timestamp.now(),
+        };
+
+        await logEvent(call_id, "call_cancel", eventData);
+        console.log("Call cancellation log saved:", eventData);
+
+        // Update callHistory with cancellation time
+        try {
+            const callHistoryRef = db.collection('callHistory').doc(call_id);
+            await callHistoryRef.update({
+                endTime: admin.firestore.Timestamp.now(), // Record cancellation time
+                status: status, // Update the status to canceled or timeout
+            });
+            console.log('callHistory updated for call_cancel:', call_id);
+        } catch (error) {
+            console.error('Error updating callHistory (call_cancel):', error);
+        }
+    });
+});
+
+exports.handlecall_timeout = functions.https.onRequest(async (req, res) => {
+    console.log("🚀🚀🚀 Function handlecall_timeout is running! TEST 2024-02-23 🚀🚀🚀");
+    return handleZegoCloudCallback(req, res, "call_timeout", async (reqBody) => {
+        console.log("🚀🚀🚀 ZegoCloud callback in handlecall_timeout 🚀🚀🚀"); // added logging
+        const { call_id, user_ids } = reqBody;
+
+        const eventData = {
+            event_name: "call_timeout",
+            status: "Timed Out",
+            timestamp: parseInt(reqBody.timestamp, 10),
+            user_ids,
+            created_at: admin.firestore.Timestamp.now(),
+        };
+
+        await logEvent(call_id, "call_timeout", eventData);
+        console.log("Call timeout log saved:", eventData);
+
+        try {
+            const callHistoryRef = db.collection('callHistory').doc(call_id);
+            await callHistoryRef.update({
+                endTime: admin.firestore.Timestamp.now(), // Record cancellation time
+                status: "Timed Out",
+            });
+            console.log('callHistory updated for call_timeout:', call_id);
+        } catch (error) {
+            console.error('Error updating callHistory (call_timeout):', error);
+        }
+    });
+});
+
+exports.handlecall_reject = functions.https.onRequest(async (req, res) => {
+    console.log("🚀🚀🚀 Function handlecall_reject is running! TEST 2024-02-23 🚀🚀🚀");
+    return handleZegoCloudCallback(req, res, "call_reject", async (reqBody) => {
+        console.log("🚀🚀🚀 ZegoCloud callback in handlecall_reject 🚀🚀🚀"); // added logging
+        const { call_id, user_id, extend_data } = reqBody;
+
+        const eventData = {
+            event_name: "call_reject",
+            status: "Rejected",
+            timestamp: parseInt(reqBody.timestamp, 10),
+            user_id,
+            extend_data,
+            created_at: admin.firestore.Timestamp.now(),
+        };
+
+        await logEvent(call_id, "call_reject", eventData);
+        console.log("Call rejection log saved:", eventData);
+
+        try {
+            const callHistoryRef = db.collection('callHistory').doc(call_id);
+            await callHistoryRef.update({
+                endTime: admin.firestore.Timestamp.now(), // Record rejection time
+                status: "Rejected",
+            });
+            console.log('callHistory updated for call_reject:', call_id);
+        } catch (error) {
+            console.error('Error updating callHistory (call_reject):', error);
+        }
+    });
+});
+
+exports.handlecall_accept = functions.https.onRequest(async (req, res) => {
+    console.log("🚀🚀🚀 Function handlecall_accept is running! TEST 2024-02-23 🚀🚀🚀");
+    return handleZegoCloudCallback(req, res, "call_accept", async (reqBody) => {
+        console.log("🚀🚀🚀 ZegoCloud callback in handlecall_accept 🚀🚀🚀"); // added logging
+        const { call_id, user_id, extend_data } = reqBody;
+
+        const eventData = {
+            event_name: "call_accept",
+            status: "Accepted",
+            timestamp: parseInt(reqBody.timestamp, 10),
+            user_id,
+            extend_data,
+            created_at: admin.firestore.Timestamp.now(),
+        };
+
+        await logEvent(call_id, "call_accept", eventData);
+        console.log("Call acceptance log saved:", eventData);
+
+        try {
+            const callHistoryRef = db.collection('callHistory').doc(call_id);
+            await callHistoryRef.update({
+                startTime: admin.firestore.Timestamp.now(), // Record acceptance time
+                status: "Accepted",
+            });
+            console.log('callHistory updated for call_accept:', call_id);
+        } catch (error) {
+            console.error('Error updating callHistory (call_accept):', error);
+        }
+    });
+});
+
+exports.handlecall_invitationsend = functions.https.onRequest(async (req, res) => {
+    console.log("🚀🚀🚀 Function handlecall_invitationsend is running! TEST 2024-02-23 🚀🚀🚀");
+    return handleZegoCloudCallback(req, res, "call_invitation_send", async (reqBody) => {
+        console.log("🚀🚀🚀 ZegoCloud callback in handlecall_invitationsend 🚀🚀🚀"); // added logging
+        const { call_id, inviter_id, invitee_ids, extended_data, invitation_time } = reqBody;
+
+        const eventData = {
+            event_name: "call_invitation_send",
+            status: "Sent",
+            timestamp: parseInt(reqBody.timestamp, 10),
+            call_id,
+            inviter_id,
+            invitee_ids,
+            extended_data,
+            invitation_time: parseInt(invitation_time, 10),
+            created_at: admin.firestore.Timestamp.now(),
+        };
+
+        await logEvent(call_id, "call_invitation_send", eventData);
+        console.log("Call invitation sent log saved:", eventData);
+
+        try {
+            const callHistoryRef = db.collection('callHistory').doc(call_id);
+            await callHistoryRef.update({
+                inviterId: inviter_id,
+                inviteeIds: invitee_ids, // Store the array of invitee IDs
+            });
+            console.log('callHistory updated for call_invitation_send:', call_id);
+        } catch (error) {
+            console.error('Error updating callHistory (call_invitation_send):', error);
+        }
+    });
+});
